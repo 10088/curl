@@ -723,6 +723,32 @@ static CURLcode cookies(struct Curl_easy *data,
   return result;
 }
 
+/* called on 1xx responses */
+static void http1xx_cb(void *arg, const struct hyper_response *resp)
+{
+  struct Curl_easy *data = (struct Curl_easy *)arg;
+  hyper_headers *headers = NULL;
+  CURLcode result = CURLE_OK;
+
+  infof(data, "Got HTTP 1xx informational");
+
+  headers = hyper_response_headers((struct hyper_response *)resp);
+  if(!headers) {
+    failf(data, "hyperstream: couldn't get 1xx response headers");
+    result = CURLE_RECV_ERROR;
+  }
+
+  data->state.hresult = result;
+
+  if(!result) {
+    /* the headers are already received */
+    hyper_headers_foreach(headers, hyper_each_header, data);
+    /* this callback also sets data->state.hresult on error */
+  }
+  if(data->state.hresult)
+    infof(data, "ERROR in 1xx, bail out!");
+}
+
 /*
  * Curl_http() gets called from the generic multi_do() function when a HTTP
  * request is to be performed. This creates and sends a properly constructed
@@ -746,6 +772,7 @@ CURLcode Curl_http(struct Curl_easy *data, bool *done)
   Curl_HttpReq httpreq;
   bool h2 = FALSE;
   const char *te = NULL; /* transfer-encoding */
+  hyper_code rc;
 
   /* Always consider the DO phase done after this function call, even if there
      may be parts of the request that is not yet sent, since we can deal with
@@ -871,6 +898,10 @@ CURLcode Curl_http(struct Curl_easy *data, bool *done)
     failf(data, "hyper_request_headers");
     goto error;
   }
+
+  rc = hyper_request_on_informational(req, http1xx_cb, data);
+  if(rc)
+    return CURLE_OUT_OF_MEMORY;
 
   result = Curl_http_body(data, conn, httpreq, &te);
   if(result)
